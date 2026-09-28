@@ -1,0 +1,141 @@
+{
+  "title": "System Monitor",
+  "tabs": {
+    "processes": "Processes",
+    "performance": "Performance",
+    "system": "System"
+  },
+  "settings": {
+    "update_interval": {
+      "label": "Update interval (ms)",
+      "description": "How often history is sampled and the open process list refreshes."
+    },
+    "history_length": {
+      "label": "History length (samples)",
+      "description": "Number of points kept for every graph."
+    },
+    "max_rows": {
+      "label": "Process rows",
+      "description": "Maximum number of processes listed after sorting and filtering."
+    },
+    "cpu_scale": {
+      "label": "Per-process CPU scale",
+      "description": "Whole machine: all rows add up to total CPU usage. Per core: 100% equals one fully busy core, like top.",
+      "machine": "Whole machine",
+      "core": "Per core"
+    },
+    "show_kernel_threads": {
+      "label": "Show kernel threads",
+      "description": "Include kworker, ksoftirqd and other kernel threads in the process list."
+    },
+    "default_tab": {
+      "label": "Tab shown on open"
+    }
+  },
+  "proc": {
+    "search": "Search by name, user, PID or command…",
+    "all": "All processes",
+    "mine": "My processes",
+    "pause": "Pause updates",
+    "resume": "Resume updates",
+    "col_name": "Process",
+    "col_pid": "PID",
+    "col_user": "User",
+    "col_cpu": "CPU",
+    "col_mem": "Memory",
+    "loading": "Sampling processes…",
+    "empty": "No matching processes",
+    "error_timeout": "The process sampler timed out.",
+    "error_empty": "The process sampler returned nothing. Is gawk installed?",
+    "footer": "{procs} processes · {threads} threads · {running} running",
+    "showing": "showing {shown} of {matched}",
+    "hint": "Click a row for details and actions",
+    "locked": "Row order frozen while a process is selected",
+    "paused": "Updates paused",
+    "ppid": "Parent",
+    "threads": "Threads",
+    "state": "State",
+    "stale": "Left the top of the list"
+  },
+  "state": {
+    "running": "running",
+    "sleeping": "sleeping",
+    "disk": "waiting on I/O",
+    "zombie": "zombie",
+    "stopped": "stopped",
+    "tracing": "traced",
+    "idle": "idle",
+    "dead": "dead"
+  },
+  "actions": {
+    "terminate": "End process",
+    "kill": "Force kill",
+    "stop": "Pause",
+    "cont": "Resume",
+    "kill_root": "Force kill as administrator",
+    "copy_pid": "Copy PID",
+    "copy_cmd": "Copy command line",
+    "command": "Command",
+    "kill_confirm": "Click again to kill"
+  },
+  "notify": {
+    "signal_failed": "Could not signal {name} ({pid})"
+  },
+  "perf": {
+    "cpu": "CPU",
+    "memory": "Memory",
+    "ram": "RAM",
+    "swap": "Swap",
+    "gpu": "GPU",
+    "vram": "VRAM",
+    "network": "Network",
+    "disk": "Disk I/O",
+    "read": "Read",
+    "write": "Write",
+    "temps": "Temperatures",
+    "window": "last {seconds} samples",
+    "peak": "peak {value}",
+    "cores": "CPU cores",
+    "cores_pending": "Waiting for the first per-core sample…",
+    "load": "Load {a} · {b} · {c}",
+    "unavailable": "Not available",
+    "core_short": "C{n}",
+    "gpu_unmonitored": "No GPU monitored (System tab)"
+  },
+  "sys": {
+    "system": "Operating system",
+    "storage": "Storage",
+    "os": "OS",
+    "kernel": "Kernel",
+    "host": "Hostname",
+    "desktop": "Desktop",
+    "shell": "Shell",
+    "uptime": "Uptime",
+    "cpu": "Processor",
+    "topology": "Cores",
+    "topology_value": "{cores} cores · {threads} threads",
+    "gpu": "Graphics",
+    "memory": "Memory",
+    "swap": "Swap",
+    "load": "Load average",
+    "procs": "Processes",
+    "used_of": "{used} of {total}",
+    "model": "Model",
+    "freq": "Frequency",
+    "temp": "Temperature",
+    "ram": "RAM",
+    "available": "Available",
+    "driver": "driver",
+    "slot": "slot",
+    "gpu_none": "No graphics adapters found",
+    "gpu_active": "Active",
+    "gpu_asleep": "Sleeping",
+    "gpu_primary": "primary display",
+    "gpu_asleep_note": "Powered down. Polling pauses until something else wakes it.",
+    "gpu_no_data": "Waiting for the first reading…",
+    "gpu_monitor_on": "Monitoring",
+    "gpu_monitor_off": "Off",
+    "gpu_monitor_tip": "Poll this card for load, VRAM and temperature. Polling a discrete card keeps it awake; a sleeping card is never woken.",
+    "gpu_off_note": "Not monitored: the plugin does not touch this card."
+  }
+}

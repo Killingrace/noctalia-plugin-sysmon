@@ -1,0 +1,100 @@
+# System Monitor - a DankMaterialShell-style process/performance monitor, built
+# the Noctalia way: one declarative panel + one headless history service.
+#
+#   noctalia msg panel-toggle killingrace/sysmon:panel [processes|performance|system]
+#
+# Heavy lifting (walking /proc, CPU deltas, sorting) runs in scripts/procs.awk so
+# the Luau callbacks stay far below the host's per-callback CPU budget.
+
+id = "killingrace/sysmon"
+name = "System Monitor"
+version = "0.1.0"
+plugin_api = 28
+author = "killingrace"
+license = "MIT"
+icon = "device-desktop-analytics"
+description = "Process list with live per-process CPU, history graphs, per-core load, temperatures and system info in a single panel."
+tags = ["panel", "service", "system", "utility"]
+dependencies = ["gawk", "find", "kill"]
+
+[[setting]]
+key = "update_interval"
+type = "int"
+label_key = "settings.update_interval.label"
+description_key = "settings.update_interval.description"
+default = 1000
+min = 500
+max = 5000
+
+[[setting]]
+key = "history_length"
+type = "int"
+label_key = "settings.history_length.label"
+description_key = "settings.history_length.description"
+default = 60
+min = 20
+max = 300
+
+[[setting]]
+key = "max_rows"
+type = "int"
+label_key = "settings.max_rows.label"
+description_key = "settings.max_rows.description"
+default = 60
+min = 10
+max = 200
+
+[[setting]]
+key = "cpu_scale"
+type = "select"
+label_key = "settings.cpu_scale.label"
+description_key = "settings.cpu_scale.description"
+default = "machine"
+
+  [[setting.options]]
+  value = "machine"
+  label_key = "settings.cpu_scale.machine"
+
+  [[setting.options]]
+  value = "core"
+  label_key = "settings.cpu_scale.core"
+
+[[setting]]
+key = "show_kernel_threads"
+type = "bool"
+label_key = "settings.show_kernel_threads.label"
+description_key = "settings.show_kernel_threads.description"
+default = false
+
+[[setting]]
+key = "default_tab"
+type = "select"
+label_key = "settings.default_tab.label"
+default = "processes"
+
+  [[setting.options]]
+  value = "processes"
+  label_key = "tabs.processes"
+
+  [[setting.options]]
+  value = "performance"
+  label_key = "tabs.performance"
+
+  [[setting.options]]
+  value = "system"
+  label_key = "tabs.system"
+
+# Samples aggregate stats into ring buffers all the time, so the graphs are
+# already full when the panel opens. Cheap: a few small /proc and /sys reads per
+# tick; a subprocess (nvidia-smi) only for an NVIDIA card the user chose to monitor.
+[[service]]
+id = "history"
+entry = "service.luau"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 900
+height = 780
+placement = "floating"
+position = "center"

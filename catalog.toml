@@ -1,0 +1,15 @@
+# Local plugin source catalog. One [[plugin]] row per plugin subdirectory;
+# the per-plugin plugin.toml stays authoritative. Keep version/plugin_api in sync.
+
+[[plugin]]
+id = "killingrace/sysmon"
+name = "System Monitor"
+version = "0.1.0"
+updated_at = 1790604406
+added_at = 1790604406
+author = "killingrace"
+license = "MIT"
+icon = "device-desktop-analytics"
+description = "Process list with live per-process CPU, history graphs, per-core load, temperatures and system info in a single panel."
+plugin_api = 28
+tags = ["panel", "service", "system", "utility"]
