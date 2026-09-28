@@ -6,8 +6,9 @@ panel plus a headless history service.
 - **Processes**: live per-process CPU (tick deltas, like `top`, not `ps`'s lifetime
   average), memory, user and PID. Sort by any column, search by name, user, PID or
   command line, and switch between all processes and your own. Click a row for
-  details and actions (end, force kill, pause/resume, copy PID/command, and
-  force-kill as administrator through `pkexec` for other users' processes).
+  details and actions (end, force kill with a second-click confirm, pause/resume,
+  copy PID/command, and force-kill as administrator through `pkexec` for other
+  users' processes).
 - **Performance**: history graphs for CPU, memory+swap, network, disk I/O, GPU+VRAM
   and temperatures, plus a tile per core with its own history sparkline, frequency
   and load average.
