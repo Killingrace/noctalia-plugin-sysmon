@@ -12,10 +12,12 @@
 --
 -- Publishes (noctalia.state):
 --   stats       { cpu, ram, swap, net, loadAvg, gpu, gpus }  -- latest sample
---   history     { cpu, cpuTemp, ram, swap, gpu, gpuTemp, vram, rx, tx, rd, wr } -- oldest first
+--   history     { cpu, cpuTemp, ram, swap, gpu, gpuTemp, vram, rx, tx, rd, wr } -- oldest first,
+--               only while the panel is open (it sets "panelOpen")
 --   io          { readBps, writeBps }
 --   cores       { number } per-core usage, /proc/stat order
---   coreHistory { { number } } one oldest-first buffer per core, same order
+--   coreHistory { { number } } one oldest-first buffer per core, same order (panel open only)
+--   cpuInfo     { model, name, vendor, cores, threads } static, from /proc/cpuinfo
 --   gpus        { GpuInfo } adapters from scripts/gpus.sh (static)
 --   gpuMonitor  { [slot] = boolean } which adapters are polled; the panel edits it
 
@@ -76,6 +78,49 @@ local function readNumber(path)
   return text and tonumber(string.match(text, "%-?%d+%.?%d*")) or nil
 end
 
+-- Text scanning. Inside Noctalia a Lua pattern costs about half a microsecond
+-- for every position it is tried at (measured: one gmatch over the 29 KB
+-- /proc/cpuinfo took ~16 ms of update()'s 25 ms budget; the stand-alone luau
+-- binary does it in a fraction of that). So files are walked line by line with
+-- plain string.find (one memchr per line), split with string.split, and
+-- patterns only ever run anchored on a single short line.
+local function lines(text)
+  local pos, len = 1, #text
+  return function()
+    if pos > len then
+      return nil
+    end
+    local e = string.find(text, "\n", pos, true) or (len + 1)
+    local line = string.sub(text, pos, e - 1)
+    pos = e + 1
+    return line
+  end
+end
+
+-- Non-empty space-separated fields of one line ("cpu  12 34" -> cpu, 12, 34).
+-- The files split this way (stat, net/dev, diskstats) pad with spaces only.
+local function fields(line)
+  local out = {}
+  for _, tok in ipairs(string.split(line, " ")) do
+    if tok ~= "" then
+      table.insert(out, tok)
+    end
+  end
+  return out
+end
+
+-- Rest of the line that starts with `key` (first occurrence), after the colon:
+-- "MemTotal:  32 kB" -> "32 kB". Keys used here only ever start a line.
+local function field(text, key, from)
+  local s = string.find(text, key, from or 1, true)
+  if not s then
+    return nil, nil
+  end
+  local e = string.find(text, "\n", s, true) or (#text + 1)
+  local line = string.sub(text, s + #key, e - 1)
+  return string.match(line, "^[^:]*:%s*(.*)$"), e
+end
+
 -- ── CPU / memory / network / load ────────────────────────────────────────────
 
 local function findCpuSensor()
@@ -101,19 +146,21 @@ end
 local function sampleCpu()
   local text = noctalia.readFile("/proc/stat") or ""
   local cur = {}
-  for name, rest in string.gmatch(text, "(cpu%d*) +([^\n]+)") do
-    local total, idle, i = 0, 0, 0
-    for n in string.gmatch(rest, "%d+") do
-      i += 1
-      if i <= 8 then -- user nice system idle iowait irq softirq steal (guest is in user)
-        local v = tonumber(n)
-        total += v
-        if i == 4 or i == 5 then
-          idle += v
-        end
+  -- the cpu lines come first; stop before the (very long) "intr" line
+  for line in lines(text) do
+    if string.sub(line, 1, 3) ~= "cpu" then
+      break
+    end
+    local f = fields(line)
+    local total, idle = 0, 0
+    for i = 2, math.min(9, #f) do -- user nice system idle iowait irq softirq steal (guest is in user)
+      local v = tonumber(f[i]) or 0
+      total += v
+      if i == 5 or i == 6 then
+        idle += v
       end
     end
-    cur[name] = { total, idle }
+    cur[f[1]] = { total, idle }
   end
 
   local function usage(name)
@@ -136,20 +183,78 @@ local function sampleCpu()
   return total, cores
 end
 
-local function sampleCpuInfo()
-  local text = noctalia.readFile("/proc/cpuinfo") or ""
-  local sum, n = 0, 0
-  for mhz in string.gmatch(text, "cpu MHz%s*:%s*([%d.]+)") do
-    sum += tonumber(mhz)
-    n += 1
+-- /proc/cpuinfo is read OFF the script thread. For every "cpu MHz" line the
+-- kernel asks that CPU for its frequency (an IPI, and amd-pstate reads an MSR
+-- on it) and spins until it answers; with idle cores in deep C-states that
+-- kernel time alone blew the 25 ms thread-CPU budget of update(). readFileAsync
+-- runs on the host's I/O pool, so the result simply lands a tick later.
+local cpuFreqMhz = nil
+local cpuStatic = nil -- { model, name, vendor, cores, threads }, parsed once
+local cpuinfoInFlight = false
+local gpusRequested = false
+local loadGpus -- forward declaration: needs the CPU model/vendor first
+
+local function onCpuInfo(text)
+  local sum, n, pos = 0, 0, 1
+  while true do
+    local mhz, nextPos = field(text, "cpu MHz", pos)
+    if nextPos == nil then
+      break
+    end
+    local v = tonumber(mhz)
+    if v then
+      sum += v
+      n += 1
+    end
+    pos = nextPos
   end
-  return n > 0 and sum / n or nil
+  cpuFreqMhz = n > 0 and sum / n or cpuFreqMhz
+  if cpuStatic == nil then
+    local model = field(text, "model name") or "—"
+    local threads, at = 0, 1
+    while true do
+      local s = string.find(text, "processor", at, true)
+      if s == nil then
+        break
+      end
+      threads += 1
+      at = s + 9
+    end
+    cpuStatic = {
+      model = model,
+      -- "AMD Ryzen 7 260 w/ Radeon 780M Graphics": the iGPU half belongs to
+      -- the GPU card, so the CPU line shows only the processor
+      name = noctalia.string.trim((string.gsub(model, "%s+w/%s.*$", ""))),
+      vendor = noctalia.string.trim(field(text, "vendor_id") or ""),
+      cores = tonumber((field(text, "cpu cores"))),
+      threads = threads,
+    }
+    noctalia.state.set("cpuInfo", cpuStatic)
+  end
+end
+
+local function refreshCpuInfo()
+  if cpuinfoInFlight then
+    return
+  end
+  cpuinfoInFlight = noctalia.readFileAsync("/proc/cpuinfo", function(text)
+    cpuinfoInFlight = false
+    if text then
+      -- A failed parse (e.g. a long GC step right after a reload tripping the
+      -- budget) just retries on the next tick instead of logging an error.
+      local ok, err = pcall(onCpuInfo, text)
+      if not ok then
+        noctalia.log("[sysmon/history] cpuinfo parse deferred: " .. tostring(err))
+      end
+    end
+  end)
 end
 
 local function sampleMemory()
   local text = noctalia.readFile("/proc/meminfo") or ""
-  local function kb(key)
-    return tonumber(string.match(text, key .. ":%s*(%d+)")) or 0
+  local function kb(key) -- "MemTotal:  32596124 kB" -> 32596124
+    local v = field(text, key) or ""
+    return tonumber(string.match(v, "^(%d+)")) or 0
   end
   local total, avail = kb("MemTotal"), kb("MemAvailable")
   local swapTotal, swapFree = kb("SwapTotal"), kb("SwapFree")
@@ -164,18 +269,16 @@ end
 local function sampleNet(nowMs)
   local text = noctalia.readFile("/proc/net/dev") or ""
   local rx, tx = 0, 0
-  -- "  iface: rxBytes rxPackets ... (8 rx fields) txBytes ..."
-  for name, fields in string.gmatch(text, "%s*([^%s:]+):%s*([^\n]+)") do
-    if not matchesAny(name, VIRTUAL_IFACES) then
-      local i = 0
-      for n in string.gmatch(fields, "%d+") do
-        i += 1
-        if i == 1 then
-          rx += tonumber(n)
-        elseif i == 9 then
-          tx += tonumber(n)
-          break
-        end
+  -- "  iface: rxBytes rxPackets ... (8 rx fields) txBytes ..."; the two
+  -- header lines have no colon
+  for line in lines(text) do
+    local colon = string.find(line, ":", 1, true)
+    if colon then
+      local name = noctalia.string.trim(string.sub(line, 1, colon - 1))
+      if not matchesAny(name, VIRTUAL_IFACES) then
+        local f = fields(string.sub(line, colon + 1))
+        rx += tonumber(f[1]) or 0
+        tx += tonumber(f[9]) or 0
       end
     end
   end
@@ -195,29 +298,46 @@ local function sampleLoad()
   return a and { tonumber(a), tonumber(b), tonumber(c) } or {}
 end
 
--- Bytes/s read and written across physical disks since the previous tick.
-local function sampleDisk(nowMs)
-  local text = noctalia.readFile("/proc/diskstats")
-  if text == nil then
-    return 0, 0
-  end
+-- Bytes/s read and written across physical disks. /proc/diskstats is read on
+-- the host's I/O pool: a synchronous read held the script thread ~10 ms per
+-- tick (most of update()'s budget), for 9 short lines. The rate is computed
+-- when the data lands and picked up by the next tick.
+local diskRate = { readBps = 0, writeBps = 0 }
+local diskInFlight = false
+
+local function onDiskStats(text, nowMs)
   local rd, wr = 0, 0
   -- major minor name reads merged SECTORS_READ ms writes merged SECTORS_WRITTEN ...
-  for name, r, w in string.gmatch(text, "%s*%d+%s+%d+%s+(%S+)%s+%d+%s+%d+%s+(%d+)%s+%d+%s+%d+%s+%d+%s+(%d+)[^\n]*") do
-    if matchesAny(name, DISK_PATTERNS) then
-      rd += tonumber(r)
-      wr += tonumber(w)
+  for line in lines(text) do
+    local f = fields(line)
+    if f[3] and matchesAny(f[3], DISK_PATTERNS) then
+      rd += tonumber(f[6]) or 0
+      wr += tonumber(f[10]) or 0
     end
   end
-
-  local readBps, writeBps = 0, 0
   if prevDisk ~= nil and nowMs > prevDisk.t then
     local dt = (nowMs - prevDisk.t) / 1000
-    readBps = math.max(0, (rd - prevDisk.rd) * SECTOR_BYTES / dt)
-    writeBps = math.max(0, (wr - prevDisk.wr) * SECTOR_BYTES / dt)
+    diskRate = {
+      readBps = math.max(0, (rd - prevDisk.rd) * SECTOR_BYTES / dt),
+      writeBps = math.max(0, (wr - prevDisk.wr) * SECTOR_BYTES / dt),
+    }
   end
   prevDisk = { rd = rd, wr = wr, t = nowMs }
-  return readBps, writeBps
+end
+
+local function refreshDisk()
+  if diskInFlight then
+    return
+  end
+  diskInFlight = noctalia.readFileAsync("/proc/diskstats", function(text)
+    diskInFlight = false
+    if text then
+      local ok, err = pcall(onDiskStats, text, noctalia.nowMs())
+      if not ok then
+        noctalia.log("[sysmon/history] diskstats parse failed: " .. tostring(err))
+      end
+    end
+  end)
 end
 
 -- ── GPUs ─────────────────────────────────────────────────────────────────────
@@ -255,10 +375,8 @@ local function loadGpuMonitor(cpuVendor)
   noctalia.state.set("gpuMonitor", out)
 end
 
-local function loadGpus()
-  local cpuinfo = noctalia.readFile("/proc/cpuinfo") or ""
-  local cpuModel = string.match(cpuinfo, "model name%s*:%s*([^\n]+)") or ""
-  local cpuVendor = string.match(cpuinfo, "vendor_id%s*:%s*(%S+)") or ""
+loadGpus = function(cpu)
+  local cpuModel, cpuVendor = cpu.model, cpu.vendor
   noctalia.runAsync({ "sh", pluginDir .. "/scripts/gpus.sh" }, function(res)
     local igpuName = string.match(cpuModel, "(Radeon [%w ]-Graphics)")
     local list = {}
@@ -376,6 +494,14 @@ end
 
 local function sample()
   local now = noctalia.nowMs()
+  refreshCpuInfo()
+  -- Full buffers go to shared state (JSON-encoded by the host, ~2000 numbers)
+  -- only while someone draws them; closed, the service just keeps them.
+  local panelOpen = noctalia.state.get("panelOpen") == true
+  if cpuStatic ~= nil and not gpusRequested then
+    gpusRequested = true -- the GPU list needs the CPU vendor; spawned from a tick, not the file callback
+    loadGpus(cpuStatic)
+  end
 
   local cpuUsage, cores = sampleCpu()
   local ram, swap = sampleMemory()
@@ -387,7 +513,7 @@ local function sample()
   local cpu = {
     usagePercent = cpuUsage,
     tempC = milli and milli / 1000,
-    freqMhz = sampleCpuInfo(),
+    freqMhz = cpuFreqMhz,
     maxFreqMhz = maxFreqMhz,
   }
 
@@ -428,10 +554,13 @@ local function sample()
     for i = #coreHist, #cores + 1, -1 do -- CPU went offline
       coreHist[i] = nil
     end
-    noctalia.state.set("coreHistory", coreHist)
+    if panelOpen then
+      noctalia.state.set("coreHistory", coreHist)
+    end
   end
 
-  local readBps, writeBps = sampleDisk(now)
+  refreshDisk()
+  local readBps, writeBps = diskRate.readBps, diskRate.writeBps
   push(hist.rd, readBps)
   push(hist.wr, writeBps)
 
@@ -439,7 +568,9 @@ local function sample()
     cpu = cpu, ram = ram, swap = swap, net = net, loadAvg = sampleLoad(), gpu = gpu, gpus = samples,
   })
   noctalia.state.set("io", { readBps = readBps, writeBps = writeBps })
-  noctalia.state.set("history", hist)
+  if panelOpen then
+    noctalia.state.set("history", hist)
+  end
 end
 
 for _, key in ipairs(SERIES) do
@@ -448,7 +579,7 @@ end
 readConfig()
 local maxKhz = readNumber("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
 maxFreqMhz = maxKhz and maxKhz / 1000
-loadGpus()
+refreshCpuInfo() -- also loads the GPU list once the CPU vendor is known
 
 function update()
   local ok, err = pcall(sample)

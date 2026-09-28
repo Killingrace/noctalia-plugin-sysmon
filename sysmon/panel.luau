@@ -214,17 +214,9 @@ local function loadSysInfo()
   info.desktop = noctalia.getenv("XDG_CURRENT_DESKTOP") or noctalia.getenv("XDG_SESSION_DESKTOP") or "—"
   info.session = noctalia.getenv("XDG_SESSION_TYPE") or "—"
 
-  local cpuinfo = noctalia.readFile("/proc/cpuinfo") or ""
-  info.cpuModel = string.match(cpuinfo, "model name%s*:%s*([^\n]+)") or "—"
-  info.cores = tonumber(string.match(cpuinfo, "cpu cores%s*:%s*(%d+)"))
-  local _, threads = string.gsub(cpuinfo, "\nprocessor%s*:", "")
-  info.threads = threads + (string.find(cpuinfo, "^processor") and 1 or 0)
-
-  -- "AMD Ryzen 7 8845HS w/ Radeon 780M Graphics": the iGPU half belongs to the
-  -- GPU card, so the CPU line shows only the processor.
-  info.cpuName = noctalia.string.trim((string.gsub(info.cpuModel, "%s+w/%s.*$", "")))
-
-  -- GPUs come from the service (state "gpus"), which lists them via sysfs.
+  -- CPU facts (state "cpuInfo") and GPUs (state "gpus") come from the service:
+  -- a synchronous read of /proc/cpuinfo can burn the whole callback budget in
+  -- the kernel (see service.luau).
   info.shell = "Noctalia"
   sysInfo = info
 
@@ -933,7 +925,8 @@ local function osCard(info)
   }, { flexGrow = 1 })
 end
 
-local function cpuCard(info, stats)
+local function cpuCard(stats)
+  local info = noctalia.state.get("cpuInfo") or {}
   local cpu = stats and stats.cpu or {}
   local load = stats and stats.loadAvg or {}
   local topology = info.cores and tr("sys.topology_value", { cores = info.cores, threads = info.threads })
@@ -941,7 +934,7 @@ local function cpuCard(info, stats)
   local freq = cpu.maxFreqMhz and string.format("%s / %s", fmt.mhz(cpu.freqMhz), fmt.mhz(cpu.maxFreqMhz)) or fmt.mhz(cpu.freqMhz)
   return card({
     cardTitle("cpu", tr("sys.cpu"), fmt.pct(cpu.usagePercent), fmt.levelColor(cpu.usagePercent), "primary"),
-    kv(tr("sys.model"), info.cpuName or info.cpuModel),
+    kv(tr("sys.model"), info.name),
     kv(tr("sys.topology"), topology),
     kv(tr("sys.freq"), freq),
     kv(tr("sys.temp"), fmt.temp(cpu.tempC)),
@@ -998,7 +991,8 @@ local function gpuBlock(i, g, s, monitored)
   local children = {
     ui.row({ gap = 8, align = "center" }, {
       ui.label({ text = g.name, color = brand or "on_surface", fontWeight = "semibold", maxLines = 2, flexGrow = 1 }),
-      gpuStateChip(asleep, brand),
+      -- no sample yet (first ticks after start): say nothing rather than "Active"
+      s.asleep ~= nil and gpuStateChip(asleep, brand) or slot(0),
       gpuMonitorButton(g, monitored),
     }),
     ui.label({ text = details, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
@@ -1044,7 +1038,7 @@ end
 local function systemTab(stats)
   local info = sysInfo or {}
   return ui.scroll({ key = "sys-scroll", flexGrow = 1, gap = 12 }, {
-    ui.row({ gap = 12 }, { osCard(info), cpuCard(info, stats) }),
+    ui.row({ gap = 12 }, { osCard(info), cpuCard(stats) }),
     ui.row({ gap = 12 }, { memoryCard(stats), gpuCard(stats) }),
     storageCard(),
   })
@@ -1083,6 +1077,7 @@ end
 function onOpen(context)
   readConfig()
   isOpen = true
+  noctalia.state.set("panelOpen", true) -- service publishes full history only while open
   tick = 0
   if sysInfo == nil then
     loadSysInfo()
@@ -1104,6 +1099,7 @@ end
 
 function onClose()
   isOpen = false
+  noctalia.state.set("panelOpen", false)
   selectedPid = nil
   paused = false
   killArmedAt = nil
