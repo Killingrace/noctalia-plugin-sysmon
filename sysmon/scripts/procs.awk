@@ -15,6 +15,7 @@
 #          scale  - machine (sum of all rows = total CPU%) | core (100% = one core)
 #          kthreads - 1 to include kernel threads
 #          page   - page size in bytes
+#          The sampler's own sh + gawk are never listed.
 #
 # Output:  "#\tprocs\tthreads\trunning\tmatched\tncpu"
 #          then per row: pid ppid user state cpu memKB threads comm cmdline (tab-separated)
@@ -79,6 +80,9 @@ END {
 
   for (k = 1; k <= npids; k++) {
     pid = pids[k]
+    # Skip the sampler itself (this gawk and its procs.sh): the filter is in their
+    # argv, so every search would "match" them, and they get a new pid each tick.
+    if (pid == PROCINFO["pid"] || pid == PROCINFO["ppid"]) continue
     fn = "/proc/" pid "/stat"
     ok = (getline line < fn)
     close(fn)
